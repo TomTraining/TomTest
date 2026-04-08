@@ -6,6 +6,7 @@ import json
 import math
 import os
 import random
+import re
 from collections import defaultdict
 from dataclasses import dataclass
 from datetime import datetime
@@ -190,7 +191,8 @@ def _build_open_judge_prompt(job: SampleJob, pred: str) -> str:
 
 
 def _parse_judge_verdict(text: str) -> Tuple[bool, str]:
-    upper = (text or "").strip().upper()
+    cleaned = re.sub(r"<think>.*?</think>", " ", text or "", flags=re.IGNORECASE | re.DOTALL)
+    upper = cleaned.strip().upper()
     if "INCORRECT" in upper:
         return False, "INCORRECT"
     if "CORRECT" in upper:
@@ -326,11 +328,12 @@ def _score_judged_open_batch(
             "gold_answers": job.answers,
             "prediction": pred,
             "correct": hit,
-            "scoring_mode": "llm_judge_deepseek_chat",
+            "scoring_mode": "llm_judge",
             "prompt_style": "two_layer",
             "shuffle_repeat": job.shuffle_k,
             "gold_letter": "",
             "pred_letter": "",
+            "judge_model": judge_runner.model,
             "judge_verdict": judge_label,
             "judge_raw": judge_text,
         }
@@ -430,14 +433,14 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--model-tag", default=None,  help="显示名，默认同 --model。")
     p.add_argument("--api-url",   default="http://localhost:8000/v1")
     p.add_argument("--api-key",   default="not-needed")
-    p.add_argument("--judge-model", default=os.environ.get("TOMTEST_JUDGE_MODEL", "deepseek-chat"))
+    p.add_argument("--judge-model", default=os.environ.get("TOMTEST_JUDGE_MODEL", "Qwen3-8B"))
     p.add_argument(
         "--judge-api-url",
-        default=os.environ.get("TOMTEST_JUDGE_API_URL", "https://api.deepseek.com/v1"),
+        default=os.environ.get("TOMTEST_JUDGE_API_URL", "http://127.0.0.1:8010/v1"),
     )
     p.add_argument(
         "--judge-api-key",
-        default=os.environ.get("TOMTEST_JUDGE_API_KEY", os.environ.get("DEEPSEEK_API_KEY", "")),
+        default=os.environ.get("TOMTEST_JUDGE_API_KEY", "not-needed"),
     )
     p.add_argument(
         "--judge-open-datasets",
@@ -559,14 +562,14 @@ def main() -> None:
                         if not args.judge_api_key:
                             raise RuntimeError(
                                 f"Dataset {dataset_name} requires --judge-api-key "
-                                "or env TOMTEST_JUDGE_API_KEY / DEEPSEEK_API_KEY."
+                                "when the configured judge endpoint requires authentication."
                             )
                         judge_runner = LLMClient(
                             model_name=args.judge_model,
                             api_key=args.judge_api_key,
                             api_url=args.judge_api_url,
                             temperature=0.0,
-                            max_tokens=8,
+                            max_tokens=1024,
                             top_p=1.0,
                             enable_thinking=False,
                         )
@@ -616,7 +619,13 @@ def main() -> None:
             f"## Raw summary\n\n```json\n{json.dumps(summary_records, ensure_ascii=False, indent=2)}\n```\n"
         )
         result_dir.mkdir(parents=True, exist_ok=True)
-        (result_dir / "results_table.md").write_text(table_doc, encoding="utf-8")
+        results_table_path = result_dir / "results_table.md"
+        if results_table_path.exists() and results_table_path.read_text(encoding="utf-8").strip():
+            with results_table_path.open("a", encoding="utf-8") as f:
+                f.write("\n\n---\n\n")
+                f.write(table_doc)
+        else:
+            results_table_path.write_text(table_doc, encoding="utf-8")
 
         if args.predictions_jsonl:
             save_jsonl(Path(args.predictions_jsonl), all_records)
