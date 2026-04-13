@@ -3,7 +3,7 @@ llm:
   api_key: not-needed
   api_url: http://127.0.0.1:8006/v1
   temperature: 0.6
-  max_tokens: 8192
+  max_tokens: 20000
   max_workers: 64
   enable_thinking: true
 
