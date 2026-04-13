@@ -47,7 +47,7 @@ TomTest/
 ## 安装依赖
 
 ```bash
-pip install openai datasets tqdm pyyaml
+pip install openai datasets tqdm pyyaml hf_transfer
 ```
 
 ## 数据集下载
