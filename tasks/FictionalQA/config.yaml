@@ -1,0 +1,10 @@
+# FictionalQA 数据集配置
+
+dataset: FictionalQA
+path: FictionalQA/test
+
+# 使用的 schema（从 FictionalQA/schemas.py 导入）
+schema: MCQAnswer
+
+# 默认 prompt 方法
+default_prompt: zero_shot

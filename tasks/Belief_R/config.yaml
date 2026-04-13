@@ -1,0 +1,10 @@
+# Belief-R 数据集配置
+
+dataset: Belief_R
+path: Belief_R/test
+
+# 使用的 schema（从 Belief_R/schemas.py 导入）
+schema: MCQAnswer
+
+# 默认 prompt 方法
+default_prompt: ZS_vanilla
