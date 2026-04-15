@@ -1,12 +1,11 @@
-"""Tomato 评测（结构化 MCQAnswer）。数据：TomDatasets Tomato，1 正 + 3 误；非此形态行跳过。"""
+"""SimpleToM 评测（结构化 MCQAnswer，3 选 1）。"""
 from __future__ import annotations
 
-import json
 import logging
 import random
 import sys
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, Iterable, List, Optional
 
 TASKS_ROOT = Path(__file__).resolve().parent.parent
 PROJECT_ROOT = TASKS_ROOT.parent
@@ -14,45 +13,61 @@ sys.path.insert(0, str(PROJECT_ROOT))
 sys.path.insert(0, str(TASKS_ROOT))
 
 from src import runner
-from Tomato.prompts import get_template, build_prompt
-from Tomato.metrics import compute_metrics
+from SimpleTom.metrics import compute_metrics
+from SimpleTom.prompts import build_prompt, get_template
+
 logging.getLogger("httpx").setLevel(logging.WARNING)
 logging.getLogger("httpcore").setLevel(logging.WARNING)
 logging.getLogger("uvicorn.access").setLevel(logging.WARNING)
 
 
+def _format_background(background: Any) -> str:
+    if isinstance(background, str):
+        return background.strip()
+    if isinstance(background, Iterable):
+        parts = [str(item).strip() for item in background if str(item).strip()]
+        return "\n".join(parts)
+    return ""
+
+
 def _story_to_prompt_text(story: Dict[str, Any]) -> str:
     parts: List[str] = []
-    if story.get("full_story"):
-        parts.append(str(story["full_story"]))
-    if story.get("summary"):
-        parts.append(f"Summary: {story['summary']}")
-    if story.get("background"):
-        bg = story["background"]
-        parts.append(f"Background: {json.dumps(bg, ensure_ascii=False) if isinstance(bg, (dict, list)) else bg}")
+    full_story = str(story.get("full_story", "")).strip()
+    summary = str(story.get("summary", "")).strip()
+    background = _format_background(story.get("background", []))
+
+    if full_story:
+        parts.append(full_story)
+    if summary:
+        parts.append(f"Summary: {summary}")
+    if background:
+        parts.append(f"Background: {background}")
+
     return "\n".join(parts).strip()
 
 
 def build_mcq_from_row(row: Dict[str, Any]) -> Optional[Dict[str, Any]]:
-    """按 TomDatasets 固定 schema 构造 _mcq；不满足 1 正 + 3 误则返回 None。"""
+    """将统一格式样本转成 3 选 1 结构。"""
     story = row.get("Story")
-    if not isinstance(story, dict):
-        return None
-    ans = row.get("Answer")
-    if not isinstance(ans, dict):
-        return None
-    ca = ans.get("Correct_Answer")
-    wa = ans.get("Wrong_Answer")
-    if not isinstance(ca, list) or not isinstance(wa, list):
-        return None
-    if len(ca) != 1 or len(wa) != 3:
+    answer = row.get("Answer")
+    if not isinstance(story, dict) or not isinstance(answer, dict):
         return None
 
-    correct = str(ca[0]).strip()
-    wrong = [str(x).strip() for x in wa]
-    letters = ["A", "B", "C", "D"]
-    texts = [correct] + wrong
-    original_choices = {letters[i]: texts[i] for i in range(4)}
+    correct = answer.get("Correct_Answer")
+    wrong = answer.get("Wrong_Answer")
+    if not isinstance(correct, list) or not isinstance(wrong, list):
+        return None
+    if len(correct) != 1 or len(wrong) != 1:
+        return None
+
+    correct_text = str(correct[0]).strip()
+    wrong_text = str(wrong[0]).strip()
+    if not correct_text or not wrong_text:
+        return None
+
+    letters = ["A", "B", "C"]
+    texts = [correct_text, wrong_text, "Empty"]
+    original_choices = {letters[i]: texts[i] for i in range(3)}
 
     return {
         "story": _story_to_prompt_text(story),
@@ -65,6 +80,7 @@ def build_mcq_from_row(row: Dict[str, Any]) -> Optional[Dict[str, Any]]:
 def preprocess_mcq(data: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     valid: List[Dict[str, Any]] = []
     skipped = 0
+
     for row in data:
         mcq = build_mcq_from_row(row)
         if mcq is None:
@@ -73,18 +89,19 @@ def preprocess_mcq(data: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         out = dict(row)
         out["_mcq"] = mcq
         valid.append(out)
+
     if skipped:
-        print(f"Warning: skipped {skipped} rows (expected 1 Correct_Answer + 3 Wrong_Answer).")
+        print(f"Warning: skipped {skipped} rows (expected 1 Correct_Answer + 1 Wrong_Answer).")
     if not valid:
-        raise RuntimeError("没有可评测样本：数据需为 TomDatasets Tomato 标准字段与 1+3 选项。")
+        raise RuntimeError("没有可评测样本：数据需包含 1 个正确答案和 1 个错误答案。")
     return valid
 
 
 def shuffle_mcq_options(mcq: Dict[str, Any], seed: int) -> Dict[str, Any]:
-    """返回一份选项顺序被打乱的 _mcq 副本，gold_letter 同步更新。"""
+    """打乱 3 个选项，并同步更新 gold_letter。"""
     rng = random.Random(seed)
     letters = sorted(mcq["original_choices"].keys())
-    texts = [mcq["original_choices"][l] for l in letters]
+    texts = [mcq["original_choices"][letter] for letter in letters]
     old_gold_idx = letters.index(mcq["gold_letter"])
 
     indices = list(range(len(letters)))
@@ -101,7 +118,7 @@ def shuffle_mcq_options(mcq: Dict[str, Any], seed: int) -> Dict[str, Any]:
 
 
 def main() -> None:
-    dataset_config = runner.load_dataset_config("tasks/Tomato/config.yaml")
+    dataset_config = runner.load_dataset_config("tasks/SimpleTom/config.yaml")
     experiment_config = runner.load_experiment_config("experiment_config.yaml")
 
     schema = dataset_config["schema"]
@@ -129,7 +146,7 @@ def main() -> None:
     for i in range(repeats):
         shuffled_rows: List[Dict[str, Any]] = []
         for j, row in enumerate(data):
-            shuffled_mcq = shuffle_mcq_options(row["_mcq"], seed=42 * (i + 1) + j)
+            shuffled_mcq = shuffle_mcq_options(row["_mcq"], seed=101 * (i + 1) + j)
             shuffled_row = dict(row)
             shuffled_row["_mcq"] = shuffled_mcq
             shuffled_rows.append(shuffled_row)
@@ -149,7 +166,7 @@ def main() -> None:
         end = start + n
         repeat_results = results[start:end]
         rows = repeat_data[i]
-        predictions = [r.answer for r in repeat_results]
+        predictions = [getattr(result, "answer", "") for result in repeat_results]
         all_predictions.append(predictions)
 
         metrics = compute_metrics(predictions, rows)
@@ -165,6 +182,8 @@ def main() -> None:
         gold_answers=all_gold,
         all_metrics=all_metrics,
         results_path=experiment_config["results_path"],
+        dataset_config=dataset_config,
+        experiment_config=experiment_config,
     )
 
     runner.print_summary_stats(all_metrics, repeats, n)

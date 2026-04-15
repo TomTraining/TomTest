@@ -26,11 +26,18 @@ def load_dataset_config(config_path: str) -> Dict[str, Any]:
     Returns:
         数据集配置字典
     """
-    with open(config_path, encoding="utf-8") as f:
+    config_file = Path(config_path)
+    if not config_file.is_file():
+        raise FileNotFoundError(
+            f"Dataset config not found: {config_file} "
+            f"(cwd: {Path.cwd()})"
+        )
+
+    with open(config_file, encoding="utf-8") as f:
         config = yaml.safe_load(f)
 
         # 动态导入数据集的 schemas 模块
-        dataset_dir = Path(config_path).parent
+        dataset_dir = config_file.parent
         import importlib.util
 
         spec = importlib.util.spec_from_file_location(
@@ -63,7 +70,14 @@ def load_experiment_config(config_path: str) -> Dict[str, Any]:
     Returns:
         实验配置字典（llm_config, repeats, max_samples, datasets_path, results_path, judge_config 等）
     """
-    with open(config_path, encoding="utf-8") as f:
+    config_file = Path(config_path)
+    if not config_file.is_file():
+        raise FileNotFoundError(
+            f"Experiment config not found: {config_file} "
+            f"(cwd: {Path.cwd()})"
+        )
+
+    with open(config_file, encoding="utf-8") as f:
         config = yaml.safe_load(f)
         return {
             "llm_config": config.get("llm", {}),

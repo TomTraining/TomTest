@@ -1,0 +1,10 @@
+# SimpleToM 数据集配置
+
+dataset: SimpleToM
+path: SimpleToM/test
+
+# 多选一 schema
+schema: MCQAnswer
+
+# 默认 prompt 方法（见 Tomato/prompts.py）
+default_prompt: v2_generate

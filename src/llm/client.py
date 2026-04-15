@@ -292,12 +292,19 @@ class LLMClient:
                 if self._parse_supported is None:
                     # 尝试一次，成功则标记支持，失败则不支持
                     try:
-                        result = self._generate_with_parse(prompt, response_object, max_retry=1)
+                        result = self._generate_with_parse(
+                            prompt,
+                            response_object,
+                            max_retry=1,
+                            raise_on_failure=True,
+                        )
                         self._parse_supported = True
                         return result
-                    except Exception:
+                    except Exception as e:
                         self._parse_supported = False
-                        logging.warning(f"[LLM] Model {self.model} parse API failed, switching to JSON object mode")
+                        logging.warning(
+                            f"[LLM] Model {self.model} parse API failed, switching to JSON object mode: {e}"
+                        )
                         # 继续使用降级模式
 
         # 根据检测结果选择模式
@@ -311,12 +318,14 @@ class LLMClient:
         prompt: str,
         response_object: Type[BaseModel],
         max_retry: int = 5,
+        raise_on_failure: bool = False,
     ) -> BaseModel:
         """使用 parse API 的原生结构化输出。"""
         extra_body: Dict[str, Any] = {"top_k": self.top_k}
         if not self.enable_thinking:
             extra_body["chat_template_kwargs"] = {"enable_thinking": False}
 
+        last_exception: Optional[Exception] = None
         for attempt in range(max_retry):
             try:
                 start = time.time()
@@ -337,15 +346,21 @@ class LLMClient:
                     usage.total_tokens = response.usage.total_tokens
 
                 result = response.choices[0].message.parsed
+                if result is None:
+                    raise ValueError("parse API returned no parsed object")
                 self._track_usage(usage, success=True)
                 return result
 
             except Exception as e:
-                import traceback
-                logging.warning(f"[LLM] parse mode attempt {attempt + 1}")
+                last_exception = e
+                logging.warning(f"[LLM] parse mode attempt {attempt + 1}: {e}")
 
         logging.error(f"[LLM] parse mode all {max_retry} attempts exhausted")
         self._track_usage(LLMUsage(), success=False)
+        if raise_on_failure:
+            raise RuntimeError(
+                f"Model {self.model} does not support parse mode or returned invalid structured output"
+            ) from last_exception
         return response_object.model_construct()
 
     def _generate_with_json_object(
