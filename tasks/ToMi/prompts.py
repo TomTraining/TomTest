@@ -23,8 +23,9 @@ Do not output a sentence, explanation, or punctuation.""",
 
 def build_prompt(template: str, row: Dict[str, Any]) -> str:
     """构建 prompt"""
-    story = row.get("instruction", "")
-    question = row.get("input", "")
+    story_info = row.get("Story", {}) if isinstance(row.get("Story"), dict) else {}
+    story = story_info.get("full_story", "") or ""
+    question = row.get("Question", "") or ""
     return template.format(story=story, question=question)
 
 

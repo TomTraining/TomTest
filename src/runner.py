@@ -6,12 +6,12 @@ import json
 import os
 import sys
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple, Union
+from typing import Any, Callable, Dict, List, Optional, Tuple, Union
 
 import yaml
 
 from src.dataloader import load_dataset
-from src.llm import LLMClient
+from src.llm import LLMClient, StructuredResult
 import logging
 # 将日志级别设置为 WARNING 或更高
 logging.getLogger("urllib3").setLevel(logging.WARNING)
@@ -65,13 +65,17 @@ def load_experiment_config(config_path: str) -> Dict[str, Any]:
     """
     with open(config_path, encoding="utf-8") as f:
         config = yaml.safe_load(f)
+        judge_block = config.get("judge", {})
+        badcase_block = config.get("badcase", {})
         return {
             "llm_config": config.get("llm", {}),
             "repeats": config.get("repeats", 1),
             "max_samples": config.get("max_samples", 0),
             "datasets_path": config.get("datasets_path", "datasets"),
             "results_path": config.get("results_path", "results"),
-            "judge_config": config.get("judge", {}),  # 覆盖数据集的 judge 配置
+            "judge_config": judge_block,
+            "enable_llm_judge": judge_block.get("enable_llm_judge", False),
+            "badcase_enabled": badcase_block.get("enabled", False),
         }
 
 
@@ -141,6 +145,8 @@ def save_common_results(
     metadata: Optional[Dict[str, Any]] = None,
     dataset_config: Optional[Dict[str, Any]] = None,
     experiment_config: Optional[Dict[str, Any]] = None,
+    badcases: Optional[List[Dict[str, Any]]] = None,
+    all_metrics_with_judge: Optional[List[Dict[str, Any]]] = None,
 ) -> Tuple[Path, Path, Path]:
     """保存评测结果
 
@@ -157,6 +163,8 @@ def save_common_results(
         metadata: 额外元数据（如 judge_model）
         dataset_config: 数据集配置字典（保存到 config.json）
         experiment_config: 实验配置字典（保存到 config.json，会过滤 api_key 和 api_url）
+        badcases: bad case 记录列表（保存到 badcases.jsonl）
+        all_metrics_with_judge: LLM judge 兜底后的 metrics 列表（保存到 metrics.json）
 
     Returns:
         (config_path, metrics_path, prediction_path) 元组
@@ -176,17 +184,14 @@ def save_common_results(
         "repeats": len(all_metrics),
     }
 
-    # 添加 dataset_config 内容（排除 schemas_module 等非 JSON 可序列化对象）
     if dataset_config:
         dataset_config_copy = dict(dataset_config)
         dataset_config_copy.pop("schemas_module", None)
-        dataset_config_copy.pop("schema", None)  # schema 是类对象，不可序列化
+        dataset_config_copy.pop("schema", None)
         config_data["dataset_config"] = dataset_config_copy
 
-    # 添加 experiment_config 内容（排除敏感信息）
     if experiment_config:
         experiment_config_copy = dict(experiment_config)
-        # 过滤敏感信息
         if "llm_config" in experiment_config_copy:
             llm_config_copy = dict(experiment_config_copy["llm_config"])
             llm_config_copy.pop("api_key", None)
@@ -208,12 +213,17 @@ def save_common_results(
         encoding="utf-8",
     )
 
-    # 2. 保存 metrics.json
+    # 2. 保存 metrics.json（含 strict 和可选的 judge 两套指标）
     avg_metrics = _compute_average_metrics(all_metrics)
-    metrics_data = {
+    metrics_data: Dict[str, Any] = {
         "avg_metrics": avg_metrics,
         "all_metrics": all_metrics,
     }
+
+    if all_metrics_with_judge:
+        avg_judge = _compute_average_metrics(all_metrics_with_judge)
+        metrics_data["avg_metrics_with_judge"] = avg_judge
+        metrics_data["all_metrics_with_judge"] = all_metrics_with_judge
 
     metrics_path = output_dir / "metrics.json"
     metrics_path.write_text(
@@ -234,6 +244,14 @@ def save_common_results(
                     "gold_answer": gold,
                 }
                 f.write(json.dumps(record, ensure_ascii=False) + "\n")
+
+    # 4. 保存 badcases.jsonl（可选）
+    if badcases:
+        badcases_path = output_dir / "badcases.jsonl"
+        with open(badcases_path, "w", encoding="utf-8") as f:
+            for bc in badcases:
+                f.write(json.dumps(bc, ensure_ascii=False) + "\n")
+        print(f"  - badcases.jsonl ({len(badcases)} bad cases)")
 
     print(f"Results saved to: {output_dir}")
     print(f"  - config.json")
@@ -290,3 +308,95 @@ def load_and_limit_data(
         random.seed(seed)
         data = random.sample(data, min(max_samples, len(data)))
     return data
+
+
+# ---------------------------------------------------------------------------
+# Bad-case collection & LLM-judge helpers
+# ---------------------------------------------------------------------------
+
+
+def collect_badcases(
+    results: List[StructuredResult],
+    predictions: List[str],
+    gold_answers: List[str],
+    prompts: List[str],
+    dataset_name: str,
+    is_correct_fn: Callable[[str, str], bool],
+    repeat_idx: int = 0,
+    judge_verdicts: Optional[List[Optional[bool]]] = None,
+) -> List[Dict[str, Any]]:
+    """收集 bad case 记录。
+
+    Args:
+        results: StructuredResult 列表
+        predictions: 提取到的预测答案列表
+        gold_answers: 标准答案列表
+        prompts: 输入 prompt 列表
+        dataset_name: 数据集名称
+        is_correct_fn: (prediction, gold) -> bool 的判定函数
+        repeat_idx: 当前 repeat 索引
+        judge_verdicts: LLM judge 判定结果（与 results 等长，未启用时为 None）
+
+    Returns:
+        bad case 字典列表
+    """
+    badcases: List[Dict[str, Any]] = []
+
+    for i, (r, pred, gold, prompt) in enumerate(
+        zip(results, predictions, gold_answers, prompts)
+    ):
+        if not r.extraction_success:
+            error_type = "extraction_failed"
+        elif not is_correct_fn(pred, gold):
+            error_type = "wrong_answer"
+        else:
+            continue
+
+        jv = judge_verdicts[i] if judge_verdicts is not None else None
+        badcases.append({
+            "repeat": repeat_idx,
+            "sample_idx": i,
+            "dataset": dataset_name,
+            "error_type": error_type,
+            "prompt": prompt,
+            "raw_response": r.raw_response,
+            "reasoning_content": r.reasoning_content,
+            "prediction": pred,
+            "gold_answer": gold,
+            "judge_result": jv,
+        })
+
+    return badcases
+
+
+def build_corrected_predictions(
+    predictions: List[str],
+    results: List[StructuredResult],
+    judge_verdicts: List[bool],
+    gold_answers: List[str],
+) -> List[str]:
+    """构建 LLM judge 兜底后的预测列表。
+
+    对于 extraction 成功的样本，保持原始预测不变；
+    对于 extraction 失败但 judge 判定语义正确的样本，替换为 gold_answer；
+    其余保持原值（空字符串）。
+
+    Args:
+        predictions: 原始预测列表
+        results: StructuredResult 列表
+        judge_verdicts: 与 extraction_failed 样本对应的 judge 结果
+        gold_answers: 标准答案列表
+
+    Returns:
+        修正后的预测列表（与 predictions 等长）
+    """
+    corrected = list(predictions)
+    judge_idx = 0
+
+    for i, r in enumerate(results):
+        if not r.extraction_success:
+            if judge_idx < len(judge_verdicts) and judge_verdicts[judge_idx]:
+                corrected[i] = gold_answers[i]
+            judge_idx += 1
+
+    return corrected

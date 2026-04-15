@@ -1,17 +1,18 @@
 """ToMQA 评测脚本（基于结构化输出）"""
 import sys
 from pathlib import Path
+from typing import Any, Dict, List
 
-# 添加父目录到路径以导入 src
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from src import runner
+from src import judge as judge_module
+
 from ToMQA.prompts import get_template, build_prompt
-from ToMQA.metrics import compute_metrics
+from ToMQA.metrics import compute_metrics, normalize_answer
 
 import logging
 
-# 关闭不必要日志
 logging.getLogger("httpx").setLevel(logging.WARNING)
 logging.getLogger("httpcore").setLevel(logging.WARNING)
 logging.getLogger("uvicorn.access").setLevel(logging.WARNING)
@@ -34,23 +35,27 @@ def extract_gold_answers(data):
     return golds
 
 
-def main():
-    # 加载数据集配置
-    dataset_config = runner.load_dataset_config("tasks/ToMQA/config.yaml")
+def _is_correct(pred: str, gold: str) -> bool:
+    p = normalize_answer(pred)
+    g = normalize_answer(gold)
+    return bool(p) and p == g
 
-    # 加载实验配置
+
+def main():
+    dataset_config = runner.load_dataset_config("tasks/ToMQA/config.yaml")
     experiment_config = runner.load_experiment_config("experiment_config.yaml")
 
     schema = dataset_config["schema"]
     prompt_method = dataset_config["default_prompt"]
-
-    # 获取 prompt 模板
     template = get_template(prompt_method)
-
-    # 创建 LLM 客户端
     client = runner.create_llm_client(experiment_config["llm_config"])
 
-    # 加载数据
+    badcase_enabled = experiment_config["badcase_enabled"]
+    enable_judge = experiment_config["enable_llm_judge"]
+    judge_client = None
+    if enable_judge:
+        judge_client = runner.create_llm_client(experiment_config["judge_config"])
+
     data = runner.load_and_limit_data(
         subset=dataset_config["subset"],
         datasets_path=experiment_config["datasets_path"],
@@ -61,17 +66,18 @@ def main():
     print(f"Prompt method: {prompt_method}")
     print(f"Repeats: {experiment_config['repeats']}")
 
-    # 构建 prompts
     prompts = [build_prompt(template, row) for row in data]
     all_prompts = prompts * experiment_config["repeats"]
 
-    # 批量结构化推理
     print(f"Running inference ({len(all_prompts)} prompts)...")
     results = client.batch_generate_structure(all_prompts, schema)
 
-    # 计算 metrics
-    all_predictions = []
-    all_metrics = []
+    gold_answers = extract_gold_answers(data)
+
+    all_predictions: List[List[str]] = []
+    all_metrics: List[Dict[str, Any]] = []
+    all_metrics_with_judge: List[Dict[str, Any]] = []
+    all_badcases: List[Dict[str, Any]] = []
 
     for i in range(experiment_config["repeats"]):
         start = i * len(data)
@@ -87,8 +93,51 @@ def main():
             f"Correct={metrics['correct']}/{metrics['total']}"
         )
 
-    # 保存结果
-    gold_answers = extract_gold_answers(data)
+        # --- LLM Judge 兜底 ---
+        judge_verdicts = None
+        if judge_client:
+            failed_items = [
+                {
+                    "raw_response": r.raw_response,
+                    "gold_answer": gold,
+                    "question": prompt,
+                }
+                for r, gold, prompt in zip(repeat_results, gold_answers, prompts)
+                if not r.extraction_success
+            ]
+            if failed_items:
+                judge_results = judge_module.batch_judge(judge_client, failed_items)
+                judge_verdicts_full: List[bool] = []
+                ji = 0
+                for r in repeat_results:
+                    if not r.extraction_success:
+                        judge_verdicts_full.append(judge_results[ji])
+                        ji += 1
+                    else:
+                        judge_verdicts_full.append(False)
+                judge_verdicts = judge_verdicts_full
+
+                corrected = runner.build_corrected_predictions(
+                    predictions, repeat_results, judge_results, gold_answers,
+                )
+                metrics_j = compute_metrics(corrected, data)
+                all_metrics_with_judge.append(metrics_j)
+                print(
+                    f"  [Judge] Accuracy={metrics_j['accuracy']:.4f}, "
+                    f"Recovered={metrics_j['correct'] - metrics['correct']}"
+                )
+            else:
+                all_metrics_with_judge.append(metrics)
+
+        # --- Bad case 收集 ---
+        if badcase_enabled:
+            bcs = runner.collect_badcases(
+                repeat_results, predictions, gold_answers, prompts,
+                dataset_config["dataset"], _is_correct,
+                repeat_idx=i, judge_verdicts=judge_verdicts,
+            )
+            all_badcases.extend(bcs)
+
     runner.save_common_results(
         dataset_name=dataset_config["dataset"],
         model=experiment_config["llm_config"]["model_name"],
@@ -99,9 +148,10 @@ def main():
         results_path=experiment_config["results_path"],
         dataset_config=dataset_config,
         experiment_config=experiment_config,
+        badcases=all_badcases if badcase_enabled else None,
+        all_metrics_with_judge=all_metrics_with_judge if enable_judge else None,
     )
 
-    # 打印统计摘要
     runner.print_summary_stats(all_metrics, experiment_config["repeats"], len(gold_answers))
 
 
