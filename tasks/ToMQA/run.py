@@ -3,10 +3,7 @@ import sys
 from pathlib import Path
 
 # 添加仓库根目录和 tasks 目录到路径，支持直接运行本脚本
-TASKS_ROOT = Path(__file__).resolve().parent.parent
-PROJECT_ROOT = TASKS_ROOT.parent
-sys.path.insert(0, str(PROJECT_ROOT))
-sys.path.insert(0, str(TASKS_ROOT))
+sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from src import runner
 from ToMQA.prompts import get_template, build_prompt
