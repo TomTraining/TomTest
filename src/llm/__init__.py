@@ -6,9 +6,10 @@ LLM 模块
 - 结构化输出: generate_structure(), batch_generate_structure()
 """
 
-from .client import LLMClient, LLMUsage
+from .client import LLMClient, LLMUsage, StructuredResult
 
 __all__ = [
     "LLMClient",
     "LLMUsage",
+    "StructuredResult",
 ]

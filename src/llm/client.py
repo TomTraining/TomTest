@@ -39,6 +39,27 @@ class LLMUsage:
     latency: float = 0.0
 
 
+@dataclass
+class StructuredResult:
+    """Wraps a structured generation result with raw output metadata.
+
+    Provides backward-compatible access to the parsed Pydantic fields
+    (e.g. ``r.answer``) while also exposing the raw LLM response for
+    bad-case analysis and LLM-judge fallback.
+    """
+    parsed: BaseModel
+    raw_response: str = ""
+    reasoning_content: str = ""
+    extraction_success: bool = True
+
+    @property
+    def answer(self):
+        return getattr(self.parsed, "answer", "")
+
+    def __getattr__(self, name: str):
+        return getattr(self.parsed, name)
+
+
 # ---------------------------------------------------------------------------
 # LLM Client
 # ---------------------------------------------------------------------------
@@ -271,8 +292,8 @@ class LLMClient:
         prompt: str,
         response_object: Type[BaseModel],
         max_retry: int = 5,
-    ) -> BaseModel:
-        """调用 LLM，返回 Pydantic 对象（自动适配不同模型）。
+    ) -> "StructuredResult":
+        """调用 LLM，返回 StructuredResult（自动适配不同模型）。
 
         两阶段降级策略：
         1. 首选：chat.completions.parse() - 直接返回 Pydantic 对象，最佳体验
@@ -284,13 +305,12 @@ class LLMClient:
             max_retry: 最大重试次数
 
         Returns:
-            response_object 的实例，失败时返回空实例
+            StructuredResult, extraction_success=False when all retries exhausted
         """
         # 首次检测：尝试使用 parse API
         if self._parse_supported is None:
             with self._parse_lock:
                 if self._parse_supported is None:
-                    # 尝试一次，成功则标记支持，失败则不支持
                     try:
                         result = self._generate_with_parse(prompt, response_object, max_retry=1)
                         self._parse_supported = True
@@ -298,9 +318,7 @@ class LLMClient:
                     except Exception:
                         self._parse_supported = False
                         logging.warning(f"[LLM] Model {self.model} parse API failed, switching to JSON object mode")
-                        # 继续使用降级模式
 
-        # 根据检测结果选择模式
         if self._parse_supported:
             return self._generate_with_parse(prompt, response_object, max_retry)
         else:
@@ -311,11 +329,14 @@ class LLMClient:
         prompt: str,
         response_object: Type[BaseModel],
         max_retry: int = 5,
-    ) -> BaseModel:
+    ) -> "StructuredResult":
         """使用 parse API 的原生结构化输出。"""
         extra_body: Dict[str, Any] = {"top_k": self.top_k}
         if not self.enable_thinking:
             extra_body["chat_template_kwargs"] = {"enable_thinking": False}
+
+        last_raw = ""
+        last_reasoning = ""
 
         for attempt in range(max_retry):
             try:
@@ -336,30 +357,45 @@ class LLMClient:
                     usage.completion_tokens = response.usage.completion_tokens
                     usage.total_tokens = response.usage.total_tokens
 
-                result = response.choices[0].message.parsed
+                msg = response.choices[0].message
+                last_raw = msg.content or ""
+                last_reasoning = (
+                    getattr(msg, "reasoning_content", "")
+                    or getattr(msg, "reasoning", "")
+                    or ""
+                )
+
+                result = msg.parsed
                 self._track_usage(usage, success=True)
-                return result
+                return StructuredResult(
+                    parsed=result,
+                    raw_response=last_raw,
+                    reasoning_content=last_reasoning,
+                    extraction_success=True,
+                )
 
             except Exception as e:
-                import traceback
                 logging.warning(f"[LLM] parse mode attempt {attempt + 1}")
 
         logging.error(f"[LLM] parse mode all {max_retry} attempts exhausted")
         self._track_usage(LLMUsage(), success=False)
-        return response_object.model_construct()
+        return StructuredResult(
+            parsed=response_object.model_construct(),
+            raw_response=last_raw,
+            reasoning_content=last_reasoning,
+            extraction_success=False,
+        )
 
     def _generate_with_json_object(
         self,
         prompt: str,
         response_object: Type[BaseModel],
         max_retry: int = 5,
-    ) -> BaseModel:
+    ) -> "StructuredResult":
         """降级模式：使用 json_object response_format + prompt 引导 + 解析验证。"""
         import json
 
-        # 构建 schema 描述
         schema_desc = self._format_schema_for_prompt(response_object)
-        # 增强提示词
         enhanced_prompt = f"""{prompt}
 
 ---
@@ -372,6 +408,9 @@ Output ONLY the JSON object, no additional text or markdown formatting."""
         extra_body: Dict[str, Any] = {"top_k": self.top_k}
         if not self.enable_thinking:
             extra_body["chat_template_kwargs"] = {"enable_thinking": False}
+
+        last_raw = ""
+        last_reasoning = ""
 
         for attempt in range(max_retry):
             try:
@@ -393,24 +432,40 @@ Output ONLY the JSON object, no additional text or markdown formatting."""
                     usage.completion_tokens = response.usage.completion_tokens
                     usage.total_tokens = response.usage.total_tokens
 
-                content = response.choices[0].message.content or ""
-                # 提取 JSON
+                msg = response.choices[0].message
+                content = msg.content or ""
+                reasoning = (
+                    getattr(msg, "reasoning_content", "")
+                    or getattr(msg, "reasoning", "")
+                    or ""
+                )
+                last_raw = content
+                last_reasoning = reasoning
+
                 json_data = self._extract_json(content)
                 if json_data is None:
                     raise ValueError(f"Failed to extract valid JSON: {content[:200]}")
 
-                # 用 Pydantic 验证（不符合就重试）
                 result = response_object.model_validate(json_data)
                 self._track_usage(usage, success=True)
-                return result
+                return StructuredResult(
+                    parsed=result,
+                    raw_response=content,
+                    reasoning_content=reasoning,
+                    extraction_success=True,
+                )
 
             except Exception as e:
-                import traceback
                 logging.warning(f"[LLM] json_object mode attempt {attempt + 1}")
 
         logging.error(f"[LLM] json_object mode all {max_retry} attempts exhausted")
         self._track_usage(LLMUsage(), success=False)
-        return response_object.model_construct()
+        return StructuredResult(
+            parsed=response_object.model_construct(),
+            raw_response=last_raw,
+            reasoning_content=last_reasoning,
+            extraction_success=False,
+        )
 
     def _extract_json(self, text: str) -> Optional[Dict[str, Any]]:
         """从文本中提取 JSON。"""
@@ -471,9 +526,9 @@ Output ONLY the JSON object, no additional text or markdown formatting."""
         self,
         prompts: List[str],
         response_object: Type[BaseModel],
-    ) -> List[BaseModel]:
+    ) -> List["StructuredResult"]:
         """
-        批量调用 LLM，返回 Pydantic 对象列表。
+        批量调用 LLM，返回 StructuredResult 列表。
 
         支持并行调用。
 
@@ -482,7 +537,7 @@ Output ONLY the JSON object, no additional text or markdown formatting."""
             response_object: 必须提供的 Pydantic 模型类
 
         Returns:
-            response_object 实例的列表
+            StructuredResult 实例的列表
         """
         with ThreadPoolExecutor(self.max_workers) as executor:
             futures = [
