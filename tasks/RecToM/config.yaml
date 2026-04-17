@@ -1,0 +1,10 @@
+# RecToM 数据集配置
+
+dataset: RecToM
+path: RecToM/test
+
+# 使用的 schema（从 RecToM/schemas.py 导入）
+schema: MultiLabelAnswer
+
+# 默认 prompt 方法
+default_prompt: multi_label_mcq
