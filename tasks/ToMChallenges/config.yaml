@@ -1,0 +1,8 @@
+dataset: ToMChallenges
+path: ToMChallenges/test
+
+# 结构化输出 schema（从 ToMChallenges/schemas.py 导入）
+schema: MCQAnswer
+
+# 默认 prompt 方法（见 ToMChallenges/prompts.py）
+default_prompt: zero_shot

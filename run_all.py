@@ -13,6 +13,8 @@ DATASETS = [
     "ToMBench",
     "Tomato",
     "ToMQA",
+    "HellaSwag",
+    "ToMChallenges",
 ]
 
 

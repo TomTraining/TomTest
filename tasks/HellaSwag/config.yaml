@@ -1,0 +1,8 @@
+dataset: HellaSwag
+path: HellaSwag/val
+
+# 结构化输出 schema（从 HellaSwag/schemas.py 导入）
+schema: MCQAnswer
+
+# 默认 prompt 方法（见 HellaSwag/prompts.py）
+default_prompt: zero-shot
