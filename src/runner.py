@@ -65,20 +65,23 @@ def load_dataset_config(config_path: str) -> Dict[str, Any]:
         }
 
 
-def load_schema(schema_name: Optional[str]) -> Optional[Type]:
+def load_schema(schema_name: Optional[Union[str, list]]) -> Optional[Union[Type, dict]]:
     """根据名称动态加载 schema 类
 
     Args:
-        schema_name: schema 类名，如 "MCQAnswer", "OpenAnswer" 等
+        schema_name: schema 类名，如 "MCQAnswer"；或类名列表，如 ["MCQAnswer", "OpenAnswer"]
 
     Returns:
-        Pydantic BaseModel 类，如果 schema_name 为 None 则返回 None
+        单个名称时返回 Pydantic BaseModel 类；
+        列表时返回 {schema_name: schema_class} 字典；
+        None 时返回 None
     """
     if schema_name is None:
         return None
 
     from src.schemas import (
         MCQAnswer,
+        MCQAnswer2,
         MCQAnswer3,
         MCQAnswer3Lower,
         OpenAnswer,
@@ -89,6 +92,7 @@ def load_schema(schema_name: Optional[str]) -> Optional[Type]:
 
     schema_map = {
         "MCQAnswer": MCQAnswer,
+        "MCQAnswer2": MCQAnswer2,
         "MCQAnswer3": MCQAnswer3,
         "MCQAnswer3Lower": MCQAnswer3Lower,
         "OpenAnswer": OpenAnswer,
@@ -96,6 +100,17 @@ def load_schema(schema_name: Optional[str]) -> Optional[Type]:
         "JudgeAnswer": JudgeAnswer,
         "MultiLabelAnswer": MultiLabelAnswer,
     }
+
+    if isinstance(schema_name, list):
+        result = {}
+        for name in schema_name:
+            if name not in schema_map:
+                raise ValueError(
+                    f"Unknown schema: {name}. "
+                    f"Available schemas: {list(schema_map.keys())}"
+                )
+            result[name] = schema_map[name]
+        return result
 
     if schema_name not in schema_map:
         raise ValueError(

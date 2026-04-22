@@ -1,6 +1,7 @@
 """SimpleToM 评测（结构化 MCQAnswer，3 选 1）。"""
 from __future__ import annotations
 
+import argparse
 import logging
 import random
 import sys
@@ -116,7 +117,11 @@ def shuffle_mcq_options(mcq: Dict[str, Any], seed: int) -> Dict[str, Any]:
 
 def main() -> None:
     dataset_config = runner.load_dataset_config("tasks/SimpleTom/config.yaml")
-    experiment_config = runner.load_experiment_config("experiment_config.yaml")
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--experiment-config", default="experiment_config.yaml")
+    args = parser.parse_args()
+    experiment_config = runner.load_experiment_config(args.experiment_config)
+    print(f"Experiment config: {args.experiment_config}")
 
     prompt_method = dataset_config["method"]
     schema = runner.load_schema(dataset_config["schema"])

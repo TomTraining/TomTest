@@ -5,6 +5,7 @@
 2. 让模型现场生成回答（batch_generate，普通文本生成）
 3. 用 instruction_following_eval 检查器计算 strict/loose 指标
 """
+import argparse
 import logging
 import sys
 from pathlib import Path
@@ -22,7 +23,11 @@ logging.getLogger("httpcore").setLevel(logging.WARNING)
 
 def main():
     dataset_config = runner.load_dataset_config("tasks/IFEval/config.yaml")
-    experiment_config = runner.load_experiment_config("experiment_config.yaml")
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--experiment-config", default="experiment_config.yaml")
+    args = parser.parse_args()
+    experiment_config = runner.load_experiment_config(args.experiment_config)
+    print(f"Experiment config: {args.experiment_config}")
 
     prompt_method = dataset_config["method"]
 

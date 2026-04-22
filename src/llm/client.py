@@ -191,5 +191,14 @@ class LLMClient:
         with self._lock:
             self.usage = LLMUsage()
 
+    @staticmethod
+    def _extract_reasoning(message) -> str:
+        """兼容新旧两种 reasoning 字段：reasoning（新）/ reasoning_content（旧，如 deepseek-reasoner）"""
+        return (
+            getattr(message, "reasoning", None)
+            or getattr(message, "reasoning_content", None)
+            or ""
+        )
+
     def __repr__(self) -> str:
         return f"{self.__class__.__name__}(model='{self.model}')"

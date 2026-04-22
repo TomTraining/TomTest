@@ -77,7 +77,7 @@ class ContentClient(LLMClient):
 
                 message = response.choices[0].message
                 text = message.content or ""
-                reasoning = getattr(message, "reasoning", "") or ""
+                reasoning = self._extract_reasoning(message)
                 if text:
                     self._track_usage(
                         prompt_tokens=prompt_tokens,

@@ -143,10 +143,12 @@ class MetricsLoader:
 
         返回:
             {
-                section_name: {metric: {"model": val, "baseline": val | None}},
+                section_name: {metric: {"model": val, "baseline": val|None, "model_count": int|None, "baseline_count": int|None}},
                 ...
             }
-        其中每个 section_name 对应 ## 标题（如 "标量指标"、"by_ability" 等）
+
+        以 _counts/_count 结尾的 section 会自动与对应 accuracy section 合并为 count 字段，
+        不单独出现在结果中。
         """
         path = self.tables_dir / dataset / "其他指标.md"
         if not path.exists():
@@ -156,15 +158,67 @@ class MetricsLoader:
         content = path.read_text(encoding="utf-8")
         sections = _parse_md_sections(content)  # {section: {row: {col: val}}}
 
+        # 识别 counts section：section 名以 _counts 或 _count 结尾
+        def _base_name(sec: str) -> str:
+            for suffix in ("_counts", "_count"):
+                if sec.endswith(suffix):
+                    return sec[: -len(suffix)]
+            return ""
+
+        count_sections: Dict[str, str] = {}  # counts_sec -> base_sec
+        for sec in sections:
+            base = _base_name(sec)
+            if base:
+                count_sections[sec] = base
+
         result: Dict[str, Dict[str, Dict[str, Any]]] = {}
         for section_name, table in sections.items():
+            if section_name in count_sections:
+                continue  # counts section 单独处理，不单独输出
             section_data: Dict[str, Dict[str, Any]] = {}
             for metric, row in table.items():
                 section_data[metric] = {
                     "model": _safe_float(row.get(model_display, "")),
                     "baseline": _safe_float(row.get(baseline_display, "")) if baseline_display else None,
+                    "model_count": None,
+                    "baseline_count": None,
                 }
             result[section_name] = section_data
+
+        # 识别 flat scalar 的重复 dict section：
+        # 标量指标里有 "by_ability.XXX" → "by_ability" section 是重复展开，需跳过
+        scalar_prefixes: set = set()
+        for metric in result.get("标量指标", {}):
+            if "." in metric:
+                scalar_prefixes.add(metric.split(".")[0])
+        for sec in list(result.keys()):
+            if sec in scalar_prefixes:
+                del result[sec]
+
+        # 将 counts section 的值合并进对应 accuracy section
+        for counts_sec, base_sec in count_sections.items():
+            # 找到对应的 accuracy section（名称包含 base_sec 或就是 "标量指标"）
+            target_sec = None
+            for sec in result:
+                if base_sec in sec or sec == "标量指标":
+                    target_sec = sec
+                    break
+            if target_sec is None:
+                continue
+            counts_table = sections[counts_sec]
+            for sub_key, row in counts_table.items():
+                # counts section 的 sub_key 对应 accuracy section 中带前缀的 metric
+                # 例如: sub_key="Faux pas" 对应 "by_ability.Non-Literal Communication: Faux pas"
+                # 直接在 accuracy section 中找 endswith(sub_key) 的 metric
+                matched = [m for m in result[target_sec] if m.endswith(sub_key)]
+                if not matched:
+                    matched = [sub_key]  # fallback: 直接用 sub_key
+                for metric in matched:
+                    if metric not in result[target_sec]:
+                        result[target_sec][metric] = {"model": None, "baseline": None, "model_count": None, "baseline_count": None}
+                    result[target_sec][metric]["model_count"] = _safe_float(row.get(model_display, ""))
+                    if baseline_display:
+                        result[target_sec][metric]["baseline_count"] = _safe_float(row.get(baseline_display, ""))
 
         return result
 
@@ -444,6 +498,27 @@ _SEP_LONG = "=" * 60
 _SEP_SHORT = "-" * 60
 
 
+def _flatten_other_metrics(other: Dict) -> List[Tuple[str, Dict]]:
+    """将多 section 的细粒度指标展平为有序列表 [(metric_name, vals), ...]"""
+    flat = []
+    for section_data in other.values():
+        for metric, vals in section_data.items():
+            flat.append((metric, vals))
+    return flat
+
+
+def _fmt_acc_count(acc: Optional[float], correct: Optional[float], total: Optional[float]) -> str:
+    """格式化 accuracy，附带 correct/total 计数。"""
+    if acc is None:
+        return "-"
+    s = f"{acc:.4f}"
+    if correct is not None and total is not None:
+        c = int(round(correct))
+        t = int(round(total))
+        s += f" ({c}/{t})"
+    return s
+
+
 class ReportPrinter:
     """格式化终端输出。"""
 
@@ -474,30 +549,24 @@ class ReportPrinter:
             print("  (无数据)")
             return
 
-        col_w = 20
-        m_w = max(len(model_display), 14)
-        b_w = max(len(baseline_display), 14) if baseline_display else 0
+        acc = model_vals.get("accuracy")
+        correct = model_vals.get("correct")
+        total = model_vals.get("total")
+        m_acc_str = _fmt_acc_count(acc, correct, total)
 
+        m_w = max(len(model_display), 20)
         if baseline_display:
-            header = f"{'指标':<{col_w}} {model_display:<{m_w}} {baseline_display:<{b_w}} {'差值(↑为好)'}"
+            b_acc = (baseline_vals or {}).get("accuracy")
+            b_correct = (baseline_vals or {}).get("correct")
+            b_total = (baseline_vals or {}).get("total")
+            b_acc_str = _fmt_acc_count(b_acc, b_correct, b_total)
+            diff_str = f"{acc - b_acc:+.4f}" if acc is not None and b_acc is not None else "N/A"
+            b_w = max(len(baseline_display), 20)
+            print(f"{'':20} {model_display:<{m_w}} {baseline_display:<{b_w}} {'差值(↑为好)'}")
+            print(f"{'accuracy':<20} {m_acc_str:<{m_w}} {b_acc_str:<{b_w}} {diff_str}")
         else:
-            header = f"{'指标':<{col_w}} {model_display}"
-        print(header)
-
-        for metric in sorted(model_vals.keys()):
-            m_val = model_vals.get(metric)
-            m_str = f"{m_val:.4f}" if m_val is not None else "-"
-            if baseline_display:
-                b_val = (baseline_vals or {}).get(metric)
-                b_str = f"{b_val:.4f}" if b_val is not None else "-"
-                if m_val is not None and b_val is not None:
-                    diff = m_val - b_val
-                    diff_str = f"{diff:+.4f}"
-                else:
-                    diff_str = "N/A"
-                print(f"{metric:<{col_w}} {m_str:<{m_w}} {b_str:<{b_w}} {diff_str}")
-            else:
-                print(f"{metric:<{col_w}} {m_str}")
+            print(f"{'':20} {model_display}")
+            print(f"{'accuracy':<20} {m_acc_str}")
 
     def print_other_metrics(
         self,
@@ -507,35 +576,58 @@ class ReportPrinter:
     ) -> None:
         print("\n[2/3] 细粒度指标")
         print(_SEP_SHORT)
-        if not other:
+        flat = _flatten_other_metrics(other)
+        if not flat:
             print("  (无数据)")
             return
 
-        for section_name, section_data in other.items():
-            print(f"\n-- {section_name} --")
-            if not section_data:
-                print("  (空)")
-                continue
+        has_count = any(v.get("model_count") is not None for _, v in flat)
+        col_w = 55
+        m_w = max(len(model_display), 10)
+        b_w = max(len(baseline_display), 10) if baseline_display else 0
+        cnt_w = 8
 
-            col_w = 40
-            m_w = max(len(model_display), 14)
-            b_w = max(len(baseline_display), 14) if baseline_display else 0
+        def _print_hdr():
+            hdr = f"  {'指标':<{col_w}} {model_display:<{m_w}}"
+            if has_count:
+                hdr += f" {'count':>{cnt_w}}"
+            if baseline_display:
+                hdr += f"  {baseline_display:<{b_w}}"
+                if has_count:
+                    hdr += f" {'count':>{cnt_w}}"
+                hdr += "     diff"
+            print(hdr)
 
-            for metric in sorted(section_data.keys()):
-                vals = section_data[metric]
-                m_val = vals.get("model")
-                m_str = f"{m_val:.4f}" if m_val is not None else "-"
-                if baseline_display:
-                    b_val = vals.get("baseline")
-                    b_str = f"{b_val:.4f}" if b_val is not None else "-"
-                    if m_val is not None and b_val is not None:
-                        diff = m_val - b_val
-                        diff_str = f"{diff:+.4f}"
-                    else:
-                        diff_str = "N/A"
-                    print(f"  {metric:<{col_w}} {m_str:<{m_w}} {b_str:<{b_w}} {diff_str}")
-                else:
-                    print(f"  {metric:<{col_w}} {m_str}")
+        def _print_row(metric, vals):
+            m_val = vals.get("model")
+            m_str = f"{m_val:.4f}" if m_val is not None else "-"
+            mc = vals.get("model_count")
+            mc_str = str(int(round(mc))) if mc is not None else "-"
+            row = f"  {metric:<{col_w}} {m_str:<{m_w}}"
+            if has_count:
+                row += f" {mc_str:>{cnt_w}}"
+            if baseline_display:
+                b_val = vals.get("baseline")
+                b_str = f"{b_val:.4f}" if b_val is not None else "-"
+                bc = vals.get("baseline_count")
+                bc_str = str(int(round(bc))) if bc is not None else "-"
+                row += f"  {b_str:<{b_w}}"
+                if has_count:
+                    row += f" {bc_str:>{cnt_w}}"
+                if m_val is not None and b_val is not None:
+                    row += f"  {m_val - b_val:+.4f}"
+            print(row)
+
+        print("\n  原始顺序")
+        _print_hdr()
+        for metric, vals in flat:
+            _print_row(metric, vals)
+
+        sorted_flat = sorted(flat, key=lambda x: (x[1].get("model") or 0), reverse=True)
+        print("\n  按指标值降序")
+        _print_hdr()
+        for metric, vals in sorted_flat:
+            _print_row(metric, vals)
 
     def print_bad_case(
         self,
@@ -628,53 +720,77 @@ class ReportGenerator:
         lines.append("## 基础指标\n")
         model_vals = basic.get("model", {})
         baseline_vals = basic.get("baseline")
+        acc = model_vals.get("accuracy")
+        correct = model_vals.get("correct")
+        total = model_vals.get("total")
+        m_acc_str = _fmt_acc_count(acc, correct, total)
         if model_vals:
             if baseline_display:
+                b_acc = (baseline_vals or {}).get("accuracy")
+                b_correct = (baseline_vals or {}).get("correct")
+                b_total = (baseline_vals or {}).get("total")
+                b_acc_str = _fmt_acc_count(b_acc, b_correct, b_total)
+                diff_str = f"{acc - b_acc:+.4f}" if acc is not None and b_acc is not None else "N/A"
                 lines.append(f"| 指标 | {model_display} | {baseline_display} | 差值 |")
                 lines.append("|---|---|---|---|")
-                for metric in sorted(model_vals.keys()):
-                    m_val = model_vals.get(metric)
-                    m_str = f"{m_val:.4f}" if m_val is not None else "-"
-                    b_val = (baseline_vals or {}).get(metric)
-                    b_str = f"{b_val:.4f}" if b_val is not None else "-"
-                    diff_str = f"{m_val - b_val:+.4f}" if (m_val is not None and b_val is not None) else "N/A"
-                    lines.append(f"| {metric} | {m_str} | {b_str} | {diff_str} |")
+                lines.append(f"| accuracy | {m_acc_str} | {b_acc_str} | {diff_str} |")
             else:
                 lines.append(f"| 指标 | {model_display} |")
                 lines.append("|---|---|")
-                for metric in sorted(model_vals.keys()):
-                    m_val = model_vals.get(metric)
-                    m_str = f"{m_val:.4f}" if m_val is not None else "-"
-                    lines.append(f"| {metric} | {m_str} |")
+                lines.append(f"| accuracy | {m_acc_str} |")
         lines.append("")
 
-        # 细粒度指标
+        # 细粒度指标 — 原始顺序 + 降序
         lines.append("## 细粒度指标\n")
-        for section_name, section_data in other.items():
-            lines.append(f"### {section_name}\n")
-            if not section_data:
-                lines.append("（空）\n")
-                continue
-            if baseline_display:
-                lines.append(f"| 指标 | {model_display} | {baseline_display} | 差值 |")
-                lines.append("|---|---|---|---|")
-                for metric in sorted(section_data.keys()):
-                    vals = section_data[metric]
+        flat = _flatten_other_metrics(other)
+
+        if not flat:
+            lines.append("（无数据）\n")
+        else:
+            has_count = any(v.get("model_count") is not None for _, v in flat)
+
+            def _md_table(rows: List[Tuple[str, Dict]]) -> None:
+                if baseline_display:
+                    hdr = f"| 指标 | {model_display} |"
+                    sep = "|---|---|"
+                    if has_count:
+                        hdr += " count |"; sep += "---|"
+                    hdr += f" {baseline_display} |"; sep += "---|"
+                    if has_count:
+                        hdr += " count |"; sep += "---|"
+                    hdr += " diff |"; sep += "---|"
+                else:
+                    hdr = f"| 指标 | {model_display} |"
+                    sep = "|---|---|"
+                    if has_count:
+                        hdr += " count |"; sep += "---|"
+                lines.append(hdr)
+                lines.append(sep)
+                for metric, vals in rows:
                     m_val = vals.get("model")
                     m_str = f"{m_val:.4f}" if m_val is not None else "-"
-                    b_val = vals.get("baseline")
-                    b_str = f"{b_val:.4f}" if b_val is not None else "-"
-                    diff_str = f"{m_val - b_val:+.4f}" if (m_val is not None and b_val is not None) else "N/A"
-                    lines.append(f"| {metric} | {m_str} | {b_str} | {diff_str} |")
-            else:
-                lines.append(f"| 指标 | {model_display} |")
-                lines.append("|---|---|")
-                for metric in sorted(section_data.keys()):
-                    vals = section_data[metric]
-                    m_val = vals.get("model")
-                    m_str = f"{m_val:.4f}" if m_val is not None else "-"
-                    lines.append(f"| {metric} | {m_str} |")
-            lines.append("")
+                    row = f"| {metric} | {m_str} |"
+                    if has_count:
+                        mc = vals.get("model_count")
+                        row += f" {int(round(mc)) if mc is not None else '-'} |"
+                    if baseline_display:
+                        b_val = vals.get("baseline")
+                        b_str = f"{b_val:.4f}" if b_val is not None else "-"
+                        row += f" {b_str} |"
+                        if has_count:
+                            bc = vals.get("baseline_count")
+                            row += f" {int(round(bc)) if bc is not None else '-'} |"
+                        diff_str = f"{m_val - b_val:+.4f}" if m_val is not None and b_val is not None else "N/A"
+                        row += f" {diff_str} |"
+                    lines.append(row)
+                lines.append("")
+
+            lines.append("### 原始顺序\n")
+            _md_table(flat)
+
+            sorted_flat = sorted(flat, key=lambda x: (x[1].get("model") or 0), reverse=True)
+            lines.append("### 按指标值降序\n")
+            _md_table(sorted_flat)
 
         # Bad cases
         lines.append(f"## Bad Case 分析（共 {len(bad_cases)} 条）\n")
