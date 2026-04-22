@@ -104,7 +104,7 @@ class StructureClient(LLMClient):
 
                 message = response.choices[0].message
                 result = message.parsed
-                reasoning = getattr(message, "reasoning", "") or ""
+                reasoning = self._extract_reasoning(message)
                 self._track_usage(
                     prompt_tokens=prompt_tokens,
                     completion_tokens=completion_tokens,
@@ -174,7 +174,7 @@ Output ONLY the JSON object, no additional text or markdown formatting."""
 
                 message = response.choices[0].message
                 content = message.content or ""
-                reasoning = getattr(message, "reasoning", "") or ""
+                reasoning = self._extract_reasoning(message)
                 # 提取 JSON
                 json_data = extract_json(content)
                 if json_data is None:

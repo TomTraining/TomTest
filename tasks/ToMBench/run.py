@@ -1,4 +1,5 @@
 """ToMBench 评测脚本（基于结构化输出）"""
+import argparse
 import sys
 from pathlib import Path
 from typing import Any, Dict, List
@@ -19,7 +20,11 @@ def main():
     dataset_config = runner.load_dataset_config("tasks/ToMBench/config.yaml")
 
     # 加载实验配置
-    experiment_config = runner.load_experiment_config("experiment_config.yaml")
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--experiment-config", default="experiment_config.yaml")
+    args = parser.parse_args()
+    experiment_config = runner.load_experiment_config(args.experiment_config)
+    print(f"Experiment config: {args.experiment_config}")
 
     prompt_method = dataset_config["method"]
     schema = runner.load_schema(dataset_config["schema"])

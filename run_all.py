@@ -1,8 +1,9 @@
 """统一评测入口
 
 运行所有数据集的评测脚本。
-所有配置通过 experiment_config.yaml 管理，无需命令行参数。
+实验配置通过 --experiment-config 参数指定，默认使用 experiment_config.yaml。
 """
+import argparse
 import os
 import subprocess
 import sys
@@ -23,16 +24,17 @@ DATASETS = [
     "Tomato",
     "ToMBench",
     "ToMChallenges",
-    # "ToMi", 指标异常低
+    "ToMi",
     "ToMQA",
 ]
 
 
-def run_dataset(dataset: str) -> bool:
+def run_dataset(dataset: str, experiment_config_path: str) -> bool:
     """运行指定数据集的评测
 
     Args:
         dataset: 数据集名称
+        experiment_config_path: experiment config 文件路径
 
     Returns:
         是否成功
@@ -48,7 +50,7 @@ def run_dataset(dataset: str) -> bool:
 
     try:
         result = subprocess.run(
-            [sys.executable, str(run_script)],
+            [sys.executable, str(run_script), "--experiment-config", experiment_config_path],
             check=True,
             capture_output=False,
             env=os.environ,
@@ -66,12 +68,21 @@ def run_dataset(dataset: str) -> bool:
 
 
 def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument(
+        "--experiment-config",
+        default="experiment_config.yaml",
+        help="experiment config 文件路径，默认 experiment_config.yaml",
+    )
+    args = parser.parse_args()
+
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     os.environ["RUN_TIMESTAMP"] = timestamp
     print(f"Run timestamp: {timestamp}")
+    print(f"Experiment config: {args.experiment_config}")
 
     for dataset in DATASETS:
-        run_dataset(dataset)
+        run_dataset(dataset, args.experiment_config)
 
     print(f"\n{'='*60}")
     print("All datasets completed.")

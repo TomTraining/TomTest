@@ -177,11 +177,12 @@ TomTest/
 | Schema | 字段 | 适用场景 |
 |---|---|---|
 | `MCQAnswer` | `answer: Literal["A","B","C","D"]` | 标准四选一 MCQ |
+| `MCQAnswer2` | `answer: Literal["A","B"]` | 二选一 MCQ |
 | `MCQAnswer3` | `answer: Literal["A","B","C"]` | 三选一 MCQ（大写） |
 | `MCQAnswer3Lower` | `answer: Literal["a","b","c"]` | 三选一 MCQ（小写） |
 | `OpenAnswer` | `answer: str` | 开放式问答 |
 | `OneWordAnswer` | `answer: str`（无空白） | 单词/短语回答 |
-| `MultiLabelAnswer` | `answer: List[str]` | 多标签多选 |
+| `MultiLabelAnswer` | `answer: List[str]`（单大写字母） | 多标签多选 |
 | `JudgeAnswer` | `answer: Literal["True","False"]` | LLM Judge 判断 |
 
 ---
@@ -218,64 +219,22 @@ Step 5  Bad Case 分析：python report/report_client.py
 
 ### 2026-04-22
 
-#### 新增 9 个数据集评测任务
+- **新增 `MCQAnswer2`**：二选一 Schema（`Literal["A","B"]`），已注册到 `load_schema`
+- **Schema 字段加入 `description`**：所有字段通过 `Field(description=...)` 标注语义
+- **`MultiLabelAnswer` 严格化**：验证器只保留单个大写字母（A-Z），过滤多字符 token
+- **`load_schema` 支持列表**：传入列表时返回 `{name: class}` 字典，支持 `config.yaml` 中 `schema: [...]` 写法
+- **`--experiment-config` 参数**：所有 `tasks/*/run.py` 及 `run_all.py` 支持指定 experiment config 路径，默认 `experiment_config.yaml`，`run_all.py` 自动透传给子进程
 
-新增以下数据集的完整评测代码（`config.yaml` / `prompts.py` / `metrics.py` / `run.py`）：
+---
 
-| 数据集 | 类型 | 说明 |
-|---|---|---|
-| Belief_R | MCQ | 信念推理（Belief Revision） |
-| FictionalQA | MCQ | 虚构场景问答 |
-| FollowBench | 指令遵循 | 多层级指令遵循，按约束条数分层评分 |
-| HellaSwag | MCQ | 常识推理补全 |
-| IFEval | 指令遵循 | 可验证指令精确遵循（含独立指令验证库） |
-| RecToM | MCQ | 递归心智理论推理 |
-| SimpleTom | MCQ | 简化版心智理论基础评测 |
-| SocialIQA | MCQ | 社交情境常识推理 |
-| ToMChallenges | MCQ | 高难度心智理论挑战集 |
+### 2026-04-22（一）
 
-#### LLM 客户端模块拆分重构
-
-原 `src/llm/client.py` 单文件拆分为四个职责独立的模块：
-
-- **`client.py`**：基础 `LLMClient`，管理 OpenAI 连接、generation 参数、线程安全的用量统计（`LLMUsage`）
-- **`content_client.py`** （新增）：`ContentClient`，专用文本生成，支持 `batch_generate()` 多线程并发、`tqdm` 进度显示
-- **`structure_client.py`** （新增）：`StructureClient`，专用结构化输出，支持 Pydantic Schema；模型不支持原生 `response_format` 时自动降级为 JSON Prompt 注入 + 正则提取
-- **`llm_utils.py`** （新增）：公共工具函数，包括 `build_extra_body`（`top_k` / `enable_thinking` 参数封装）
-
-#### 运行器与任务体系统一化
-
-- **`src/runner.py`**：新增 `sample_metas` 参数，支持将每条样本的 `Meta` 字典写入 `prediction.jsonl`，便于后续按维度分析；`create_judge_client()` 支持数据集级别的 `use_llm_judge` 覆盖全局配置；输出目录时间戳改为由 `run_all.py` 统一生成并通过环境变量传递，保证同一批次所有数据集落在同一 `exp_*` 目录
-- **`run_all.py`**：启动时生成唯一 `RUN_TIMESTAMP` 并注入 `os.environ`，所有子进程共享同一时间戳
-- **`src/schemas.py`** （新增）：统一定义各任务通用 Pydantic Schema（`MCQAnswer` 等），各任务不再维护独立 `schemas.py`
-- **`src/utils.py`** （新增）：公共工具函数库
-- **所有任务 `run.py`**：统一更新 `create_judge_client()` 和 `save_common_results()` 调用签名，传入 `dataset_config` 和 `sample_metas`
-- **所有任务 `config.yaml`**：新增注释说明字段 `use_llm_judge`，支持数据集级别覆盖全局 judge 配置
-- **`tasks/ToMi/prompts.py`**：修复字段名错误（`instruction`/`input` → `Story.full_story`/`Question`，与数据集实际列名对齐）
-- **移除**：各任务独立的 `schemas.py`（`ToMBench`、`ToMi`、`ToMQA`、`Tomato`）
-
-#### 报告与分析工具迁移至 `report/` 目录
-
-- **`generate_dataset_tables.py`、`generate_summary.py`** 从项目根目录移入 `report/`，根目录对应文件已删除
-- **`report/report_client.py`** （新增）：Bad Case 深度分析工具；从 `tables/` 读取多维度指标并支持基线对比；按维度错误率分三层优先级（Tier 1/2/3）抽取典型错误样本；调用本地 LLM API 批量分析错误原因与改善方向；可导出 Markdown 报告到 `analysis/`
-- **`report/report_config.yaml`** （新增）：`report_client.py` 配置文件模板
-- **`report/tables_config.yaml`** （新增）：`generate_dataset_tables.py` 配置文件
-- **`report/README.md`** （新增）：三个报告工具的功能说明与使用指南
-
-#### 文档更新
-
-- **`docs/add_new_dataset.md`**：新增数据集准备流程（HuggingFace Hub 下载、本地转换、`datasets_examples/` 验证），内容约翻倍
-- **`docs/add_new_model.md`**：重组为本地 vLLM 与云端 API 两条路径，补充 smoke test（`max_samples: 3`）和故障排查
-- **新增** `docs/generate_tables.md`、`docs/generate_summary.md`、`docs/bad_case_analysis.md`：对应三个报告工具的完整操作文档
-
-#### 配置与环境
-
-- **`experiment_config.yaml`**：默认值调整为本地部署场景（`enable_thinking: true`、`repeats: 3`、`max_samples: 0` 全量）
-- **`.gitignore`**：新增忽略 `datasets/`、`datasets_examples/`、`analysis/`、`__pycache__/`、`*.pyc`
-
-#### 评测结果（tables/）
-
-新增 Qwen3-8B（thinking 关闭）与 Qwen3-8B-Think（thinking 开启）在 10 个数据集上的完整对比结果，包含 `基础指标.md`、`其他指标.md` 和 `config.json`。
+- 新增 9 个数据集评测任务（Belief_R / FictionalQA / FollowBench / HellaSwag / IFEval / RecToM / SimpleTom / SocialIQA / ToMChallenges）
+- LLM 客户端拆分重构：`client.py` → `client` / `content_client` / `structure_client` / `llm_utils` 四模块
+- `src/runner.py`：新增 `sample_metas`、数据集级 `use_llm_judge` 覆盖、统一时间戳通过环境变量传递
+- `src/schemas.py`：统一定义各任务 Schema，各任务不再维护独立 `schemas.py`
+- 报告工具迁移至 `report/`，新增 `report_client.py`（Bad Case 分析）
+- 新增文档：`docs/generate_tables.md`、`docs/generate_summary.md`、`docs/bad_case_analysis.md`、`report/README.md`
 
 ---
 

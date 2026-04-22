@@ -120,6 +120,7 @@ schema: MCQAnswer
 | 题型 | 选用 Schema |
 |---|---|
 | 四选一（A/B/C/D） | `MCQAnswer` |
+| 二选一（A/B） | `MCQAnswer2` |
 | 三选一（A/B/C） | `MCQAnswer3` |
 | 三选一小写（a/b/c） | `MCQAnswer3Lower` |
 | 开放式问答 | `OpenAnswer` |
@@ -328,6 +329,7 @@ def compute_metrics(
 
 ```python
 """MyDataset 评测脚本"""
+import argparse
 import sys
 from pathlib import Path
 
@@ -344,14 +346,16 @@ def main():
     dataset_config = runner.load_dataset_config(
         Path(__file__).parent / "config.yaml"
     )
-    experiment_config = runner.load_experiment_config(
-        Path(__file__).parent.parent.parent / "experiment_config.yaml"
-    )
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--experiment-config", default="experiment_config.yaml")
+    args = parser.parse_args()
+    experiment_config = runner.load_experiment_config(args.experiment_config)
+    print(f"Experiment config: {args.experiment_config}")
 
     # 2. 创建 LLM 客户端
     schema = runner.load_schema(dataset_config["schema"])
-    client = runner.create_llm_client(experiment_config["llm"], dataset_config)
-    judge_client = runner.create_judge_client(experiment_config.get("judge", {}))
+    client = runner.create_llm_client(experiment_config["llm_config"], dataset_config)
+    judge_client = runner.create_judge_client(experiment_config["judge_config"], dataset_config)
 
     # 3. 加载数据
     data = runner.load_and_limit_data(
@@ -401,6 +405,7 @@ def main():
         all_prompts=all_prompts_by_repeat,
         gold_answers=gold_answers,
         all_metrics=all_metrics,
+        sample_metas=[row.get("Meta") for row in data],
     )
     runner.print_summary_stats(all_metrics, repeats, n)
 
@@ -494,11 +499,12 @@ python run_all.py                # 全部数据集
 | Schema 名 | 字段 | 适用场景 |
 |---|---|---|
 | `MCQAnswer` | `answer: Literal["A","B","C","D"]` | 标准四选一 MCQ |
+| `MCQAnswer2` | `answer: Literal["A","B"]` | 二选一 MCQ |
 | `MCQAnswer3` | `answer: Literal["A","B","C"]` | 三选一 MCQ（大写） |
 | `MCQAnswer3Lower` | `answer: Literal["a","b","c"]` | 三选一 MCQ（小写） |
 | `OpenAnswer` | `answer: str` | 开放式问答 |
 | `OneWordAnswer` | `answer: str`（无空白字符） | 单词/短语回答 |
-| `MultiLabelAnswer` | `answer: List[str]` | 多标签多选 |
+| `MultiLabelAnswer` | `answer: List[str]`（单大写字母） | 多标签多选 |
 | `JudgeAnswer` | `answer: Literal["True","False"]` | LLM Judge 判断 |
 
 ### 自定义 Schema
