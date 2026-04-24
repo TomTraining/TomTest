@@ -23,9 +23,11 @@ DATASETS = [
     "SocialIQA",
     "Tomato",
     "ToMBench",
-    "ToMChallenges",
-    "ToMi",
-    "ToMQA",
+    # "ToMChallenges", 指标有问题
+    # "ToMi",
+    # "ToMQA",
+    "BigTom",
+    "FANToM"
 ]
 
 
