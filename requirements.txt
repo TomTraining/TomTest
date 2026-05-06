@@ -4,3 +4,4 @@ tqdm>=4.65.0
 hf_transfer
 datasets
 openai
+huggingface_hub
