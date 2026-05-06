@@ -1,0 +1,15 @@
+# ExploreToM 数据集配置
+dataset: ExploreToM
+path: ExploreToM/test
+
+# prompt 方法
+method: zero_shot
+
+# 开放式短答案
+schema: OpenAnswer
+
+# 可选：覆盖全局 system prompt
+system_prompt: ""
+
+# 建议先不用 LLM judge，直接做归一化精确匹配
+use_llm_judge: true
