@@ -39,6 +39,13 @@ class MCQAnswer3Lower(BaseModel):
     )
 
 
+class MCQAnswer15(BaseModel):
+    """十五选一多选题答案 schema（选项字母 A-O，用于 HiToM）"""
+    answer: Literal["A", "B", "C", "D", "E", "F", "G", "H", "I", "J", "K", "L", "M", "N", "O"] = Field(
+        description="The answer to the multiple choice question, must be one of A, B, C, D, E, F, G, H, I, J, K, L, M, N, O"
+    )
+
+
 class MCQAnswer2(BaseModel):
     """二选一单选题答案 schema（选项字母 A/B）"""
     answer: Literal["A", "B"] = Field(

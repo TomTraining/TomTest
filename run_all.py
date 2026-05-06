@@ -28,6 +28,7 @@ DATASETS = [
     # "ToMQA",
     "BigToM",
     "FANToM",
+    "HiToM",
 ]
 
 
