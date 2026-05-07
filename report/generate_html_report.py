@@ -207,6 +207,9 @@ def render_benchmark_section(benchmark: str, tables_dir: Path) -> str:
     other_tables = parse_md_table(bench_dir / "其他指标.md")
     other_html_parts = []
     for section_title, headers, rows in other_tables:
+        # 跳过 counts 类统计表（仅含样本数量，无意义）
+        if section_title.lower().endswith("_counts"):
+            continue
         table_html = render_benchmark_table(headers, rows, highlight=False)
         if section_title:
             other_html_parts.append(f'<h4 class="sub-section">{section_title}</h4>')
