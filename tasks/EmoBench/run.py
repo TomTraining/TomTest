@@ -25,32 +25,50 @@ logging.getLogger("uvicorn.access").setLevel(logging.WARNING)
 
 
 def _validate_row(row: Dict[str, Any]) -> bool:
+    """校验行格式：要求 Question + Answer.Correct_Answer(1) + Answer.Wrong_Answer(>=1)。
+    不再要求 Meta.choice_texts（由 preprocess_data 自动注入）。
+    """
     question = str(row.get("Question", "") or "").strip()
     answer = row.get("Answer", {}) if isinstance(row.get("Answer"), dict) else {}
-    meta = row.get("Meta", {}) if isinstance(row.get("Meta"), dict) else {}
-    choice_texts = meta.get("choice_texts", [])
     correct = answer.get("Correct_Answer", [])
     wrong = answer.get("Wrong_Answer", [])
 
     return (
         bool(question)
-        and isinstance(choice_texts, list)
-        and len(choice_texts) >= 2
         and isinstance(correct, list)
         and len(correct) == 1
         and isinstance(wrong, list)
-        and len(choice_texts) == len(correct) + len(wrong)
+        and len(wrong) >= 1
     )
 
 
 def preprocess_data(data: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-    valid = [row for row in data if _validate_row(row)]
-    skipped = len(data) - len(valid)
+    """过滤无效行，并自动将 Answer.Correct_Answer + Wrong_Answer 注入 Meta.choice_texts。"""
+    valid = []
+    skipped = 0
+    for row in data:
+        if not _validate_row(row):
+            skipped += 1
+            continue
+        ans = row.get("Answer", {})
+        correct = ans.get("Correct_Answer", [])
+        wrong = ans.get("Wrong_Answer", [])
+        # 注入 choice_texts（若 Meta 中已有则跳过，避免覆盖）
+        meta = row.get("Meta", {}) if isinstance(row.get("Meta"), dict) else {}
+        if not meta.get("choice_texts"):
+            row = dict(row)
+            row["Meta"] = dict(meta)
+            row["Meta"]["choice_texts"] = (
+                [str(c).strip() for c in correct]
+                + [str(w).strip() for w in wrong]
+            )
+        valid.append(row)
+
     if skipped:
         print(f"Warning: skipped {skipped} invalid rows.")
     if not valid:
         raise RuntimeError(
-            "没有可评测样本：EmoBench 数据需要包含 Question、Answer.{Correct_Answer, Wrong_Answer} 和 Meta.choice_texts。"
+            "没有可评测样本：EmoBench 数据需包含 Question 和 Answer.{Correct_Answer, Wrong_Answer}。"
         )
     return valid
 
