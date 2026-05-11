@@ -312,8 +312,14 @@ def main() -> None:
         all_prompts.append(prompts_i)
         all_gold.append(gold_i)
 
-        preds = [r.content.answer if r is not None and r.content is not None else None for r in repeat_results]
-        metrics = compute_metrics(preds, gold_i, rows_i, judge_client)
+        preds_raw = []
+        for r, row in zip(repeat_results, rows_i):
+            if r is None or r.content is None:
+                preds_raw.append(None)
+            else:
+                # list 任务的 MultiLabelAnswer.answer 是 List[str]，直接传；其他取字符串
+                preds_raw.append(r.content.answer)
+        metrics = compute_metrics(preds_raw, gold_i, rows_i, judge_client)
         all_metrics.append(metrics)
         print(f"Run {i+1}: Accuracy={metrics['accuracy']:.4f}, Correct={metrics['correct']}/{metrics['total']}")
 

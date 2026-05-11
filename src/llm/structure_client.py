@@ -11,6 +11,10 @@ from typing import Any, Dict, List, Type
 from pydantic import BaseModel
 from tqdm import tqdm
 
+
+class _ProbeSchema(BaseModel):
+    ok: bool
+
 from .client import LLMClient, LLMResponse
 from .llm_utils import build_extra_body, extract_json, format_schema_for_prompt
 
@@ -69,7 +73,7 @@ class StructureClient(LLMClient):
         prompt: str,
         response_object: Type[BaseModel],
         max_retry: int = 5,
-        timeout: int = 60,
+        timeout: int = 120,
     ) -> LLMResponse:
         """使用 parse API 的原生结构化输出。"""
         extra_body = build_extra_body(self.top_k, self.enable_thinking)
@@ -115,7 +119,7 @@ class StructureClient(LLMClient):
                 return LLMResponse(content=result, reasoning=reasoning)
 
             except Exception as e:
-                logging.warning(f"[StructureClient] parse mode attempt {attempt + 1}/{max_retry} failed: {type(e).__name__}")
+                logging.warning(f"[StructureClient] parse mode attempt {attempt + 1}/{max_retry} failed: {type(e).__name__}: {e}")
 
         logging.error(f"[StructureClient] parse mode all {max_retry} attempts exhausted")
         self._track_usage(success=False)
@@ -160,7 +164,7 @@ Output ONLY the JSON object, no additional text or markdown formatting."""
                     max_tokens=self.max_tokens,
                     presence_penalty=self.presence_penalty,
                     extra_body=extra_body,
-                    timeout=60,
+                    timeout=120,
                 )
 
                 latency = time.time() - start
@@ -242,19 +246,18 @@ Output ONLY the JSON object, no additional text or markdown formatting."""
         if not prompts:
             return []
 
-        # 先用第一个 prompt 测试 parse 模式
-        logging.info("[StructureClient] Testing parse mode with first prompt...")
-        first_result = self._generate_with_parse(prompts[0], response_object, max_retry=1, timeout=10)
-
-        # 根据测试结果决定使用哪种模式
-        if first_result.content is None:
-            self._use_parse_mode = False
-            logging.warning("[StructureClient] Parse mode failed, switching to create mode for all requests")
-            # 第一个也用 create 重试
-            first_result = self._generate_with_create(prompts[0], response_object)
-        else:
-            self._use_parse_mode = True
-            logging.info("[StructureClient] Parse mode works, using it for all requests")
+        # 仅在本 session 第一次调用时探测 parse 模式
+        if self._use_parse_mode is None:
+            logging.info("[StructureClient] Testing parse mode with first prompt...")
+            # 用最短 probe prompt 快速探测，避免等待完整推理
+            probe_prompt = 'Reply with {"ok": true}.'
+            probe_result = self._generate_with_parse(probe_prompt, _ProbeSchema, max_retry=1, timeout=120)
+            if probe_result.content is None:
+                self._use_parse_mode = False
+                logging.warning("[StructureClient] Parse mode failed, switching to create mode for all requests")
+            else:
+                self._use_parse_mode = True
+                logging.info("[StructureClient] Parse mode works, using it for all requests")
         results = []
         with ThreadPoolExecutor(self.max_workers) as executor:
             futures = [

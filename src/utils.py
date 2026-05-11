@@ -53,6 +53,20 @@ def compute_sample_metrics(
     }
 
 
+def token_f1(gold: str, pred: str) -> float:
+    """Token-level F1 score between gold and pred strings."""
+    from collections import Counter
+    a = (gold or "").split()
+    b = (pred or "").split()
+    common = Counter(a) & Counter(b)
+    n = sum(common.values())
+    if n == 0:
+        return 0.0
+    p = n / len(b) if b else 0.0
+    r = n / len(a) if a else 0.0
+    return 2 * p * r / (p + r) if (p + r) else 0.0
+
+
 def compute_sample_metrics_with_llm(
     predictions: List[Any],
     gold_answers: List[Any],

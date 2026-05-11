@@ -14,30 +14,17 @@ Return format follows docs/add_new_dataset.md:
 from __future__ import annotations
 
 import sys
-from collections import Counter
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
 from src.schemas import JudgeAnswer
-from src.utils import compute_sample_metrics
+from src.utils import compute_sample_metrics, token_f1 as _token_f1
 
 
 def _safe_div(num: float, den: float) -> float:
     return float(num) / float(den) if den else 0.0
-
-
-def _token_f1(a: str, b: str) -> float:
-    a_tokens = (a or "").split()
-    b_tokens = (b or "").split()
-    common = Counter(a_tokens) & Counter(b_tokens)
-    num_same = sum(common.values())
-    if num_same == 0:
-        return 0.0
-    precision = num_same / len(b_tokens) if b_tokens else 0.0
-    recall = num_same / len(a_tokens) if a_tokens else 0.0
-    return (2 * precision * recall / (precision + recall)) if (precision + recall) else 0.0
 
 
 def _snippet_id(row: Dict[str, Any]) -> str:
@@ -175,7 +162,19 @@ def _eval_qa_with_llm_judge(
     judge_client: Any,
 ) -> Tuple[List[bool], List[float], List[str]]:
     if judge_client is None:
-        raise ValueError("FANToM QA tasks require a judge_client. Enable judge.use_llm_judge or set dataset use_llm_judge.")
+        # data_processing 阶段用 token-F1 代替 LLM judge，避免额外 API 调用
+        is_correct_list: List[bool] = []
+        token_f1_list: List[float] = []
+        gold_texts_fallback: List[str] = []
+        for pred_str, row in zip(predictions, data):
+            correct_texts = _get_correct_texts(row)
+            gold = correct_texts[0] if correct_texts else ""
+            gold_texts_fallback.append(gold)
+            f1 = _token_f1(gold.lower(), (pred_str or "").lower())
+            ok = pred_str is not None and f1 > 0.5
+            is_correct_list.append(ok)
+            token_f1_list.append(f1)
+        return is_correct_list, token_f1_list, gold_texts_fallback
 
     judge_prompts: List[str] = []
     gold_texts: List[str] = []
@@ -310,7 +309,13 @@ def compute_metrics(
 
     for i, (pred, row) in enumerate(zip(predictions, data)):
         qtype = _question_type(row)
-        pred_str = pred if isinstance(pred, str) or pred is None else str(pred)
+        # list 任务的 pred 是 List[str]，保持原样传给 _normalize_multilabel_set；其他任务转 str
+        if isinstance(pred, (list, tuple, set, frozenset)):
+            pred_for_list = pred
+            pred_str = None  # list 任务不用 pred_str
+        else:
+            pred_for_list = pred
+            pred_str = pred if isinstance(pred, str) or pred is None else str(pred)
 
         if qtype == "beliefQAs":
             belief_rows.append(row)
@@ -350,13 +355,13 @@ def compute_metrics(
 
         if qtype == "answerabilityQA_list":
             gold_labels = mcq.get("gold_labels", [])
-            ans_list_pred.append(_normalize_multilabel_set(pred))
+            ans_list_pred.append(_normalize_multilabel_set(pred_for_list))
             ans_list_gold.append(_normalize_multilabel_set(gold_labels) or frozenset())
             ans_list_gidx.append(i)
             continue
         if qtype == "infoAccessibilityQA_list":
             gold_labels = mcq.get("gold_labels", [])
-            info_list_pred.append(_normalize_multilabel_set(pred))
+            info_list_pred.append(_normalize_multilabel_set(pred_for_list))
             info_list_gold.append(_normalize_multilabel_set(gold_labels) or frozenset())
             info_list_gidx.append(i)
             continue

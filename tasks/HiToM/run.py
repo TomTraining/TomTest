@@ -72,6 +72,9 @@ def preprocess_data(data: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     return valid
 
 
+preprocess_mcq = preprocess_data
+
+
 def main() -> None:
     dataset_config = runner.load_dataset_config("tasks/HiToM/config.yaml")
     parser = argparse.ArgumentParser()
